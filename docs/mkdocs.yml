@@ -1,0 +1,28 @@
+site_name: CL2JS
+
+theme:
+  name: material
+  palette:
+  - scheme: default
+    primary: blue grey
+    accent: blue grey
+    toggle:
+      icon: material/toggle-switch-off-outline
+      name: Switch to dark mode
+  - scheme: slate
+    primary: light green
+    accent: light green
+    toggle:
+      icon: material/toggle-switch
+      name: Switch to light mode
+nav:
+  - Home: index.md
+  - Reference:
+      - let: reference/let.md
+      - unary operators: reference/unary_operators.md
+      - binary operators: reference/binary_operators.md
+      - for: reference/for.md
+      - cond: reference/cond.md
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences

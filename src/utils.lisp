@@ -1,7 +1,11 @@
 (defpackage #:cl2js/utils
   (:use cl)
   (:export #:fmt-ident
-           #:dash-to-camel-case))
+           #:dash-to-camel-case
+           #:destructuring-plist
+           #:cons-pair?
+           #:binding?
+           #:mapcadr))
 
 (in-package #:cl2js/utils)
 
@@ -21,3 +25,20 @@
   (if (stringp ident)
       ident
       (dash-to-camel-case (string-downcase (string ident)))))
+
+(defmacro destructuring-plist (keys expr &rest body)
+  `(destructuring-bind (&key ,@keys &allow-other-keys) ,expr
+     ,@body))
+
+(defun cons-pair? (cp)
+  (and (consp cp)
+       (eq nil (cddr cp))))
+
+(defun binding? (b)
+  (and (consp b)
+       (eq 2 (length b))
+       (keywordp (car b))))
+
+(defmacro mapcadr (function list &rest args)
+  `(mapcar (lambda (e)
+             (list (car e) (funcall ,function (cadr e)))) ,list ,@args))

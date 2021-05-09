@@ -114,8 +114,7 @@
     (funcall emit-ast obj-expr)
     (emit cp "[")
     (funcall emit-ast get-expr)
-    (emit cp "]")
-    ))
+    (emit cp "]")))
 
 ;; TODO: assume AST transform already handled progn/expr and return.
 ;; TODO: desugar (if expr then-clause) to (if expr then-clause else nil)
@@ -158,15 +157,17 @@
     (emit-ast* ast)))
 
 (defun emit-js (ast cp)
-  (emit-ast ast cp '(lambda emit/lambda
-                     return emit/return
-                     let emit/let
-                     const emit/const
-                     set emit/set
-                     //binary emit/binop
-                     //unary/pre emit/unary/pre
-                     //unary/post emit/unary/post
-                     if emit/if-else)))
+  (emit-ast ast cp '(:lambda emit/lambda
+                     :return emit/return
+                     :let emit/let
+                     :const emit/const
+                     :set emit/set
+                     ://binary emit/binop
+                     ://unary/pre emit/unary/pre
+                     ://unary/post emit/unary/post
+                     ://prop emit/prop.
+                     ://prop[] emit/prop-get
+                     :if emit/if-else)))
 
 ;; *CONSIDER* not resolving ident iff already a str (escape-hatch)
 ;; refactor - move ident transformation out into separate fn

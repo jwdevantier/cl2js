@@ -5,7 +5,10 @@
            #:rewrite-ast
            #:rewrite-ast-multipass
            #:keywordize-ast
+           #:ensure-return
+           #:rr/let
            #:rr/if
+           #:rr/cond
            #:rr/defun
            #:rr/lambda
            #:rr/binop
@@ -34,31 +37,95 @@
 
 (defun rewrite-ast-multipass (ast &rest rulesets)
   "parse AST, applying each ruleset in turn."
-  (reduce #'rewrite-ast rulesets :initial-value ast))
+  (reduce #'rewrite-ast* rulesets :initial-value (keywordize-ast ast)))
 
 (defun kw-of-string (s)
   "create/get keyword given string"
   (intern (string-upcase s) "KEYWORD"))
 
-;; TODO () => nil.. still OK for emit ?
 (defun keywordize-ast (ast)
+  "convert all symbols to keywords in ast"
   (cond ((eq nil ast) ast)
         ((symbolp ast) (kw-of-string ast))
         ((atom ast) ast)
         (t (mapcar #'keywordize-ast ast))))
 
+(defun ensure-return (stmts)
+  "ensure last form in `stmts` is a :return-form"
+  (unless (and (listp stmts)
+               (not (eq stmts nil)))
+    (error "ensure return expects a list of elements"))
+  (let ((last-form (let ((last* (car (last stmts))))
+                     (cond ((atom last*) `(:return ,last*))
+                           ((listp last*)
+                            (if (eq :return (car last*))
+                                last*
+                                `(:return ,last*)))))))
+    (reduce (lambda (acc e) (cons e acc))
+            (reverse (butlast stmts 1))
+            :initial-value (cons last-form '()))))
+
+(defun ->list (x)
+  "coerce to list, wraps x in list if x is an atom (or nil)"
+  (if (or (eq nil x)
+          (not (listp x)))
+      (list x) x))
+
+(defun rr/let (ast parse-fn)
+  "create IIF whose arguments match the bindings"
+  (destructuring-bind (kw_ bindings &rest body) ast
+    (declare (ignore kw_))
+    `((:lambda ,(mapcar #'car bindings)
+        ,@(ensure-return (mapcar parse-fn body)))
+      ,@(mapcar #'cadr bindings))))
+
 (defun rr/if (ast parse-fn)
-  "ensure if-forms also have an else-branch (remove one-armed if's)"
-  (if (eq (length ast) 3)
-      (destructuring-bind (kw_ cond then-branch) ast
-        (declare (ignore kw_))
-        `(:if ,(funcall parse-fn cond)
-              ,(funcall parse-fn then-branch) :nil))
-      (destructuring-bind (kw_ cond then-branch else-branch) ast
-        (declare (ignore kw_))
-        `(:if ,(funcall parse-fn cond)
-              ,(funcall parse-fn then-branch)
-              ,(funcall parse-fn else-branch)))))
+  ; create IIFE and wrap both branches in (:progn) with a guaranteed
+  ; (:return ...) form as the last form.
+  (destructuring-bind (kw_ cond then &optional (else nil else?)) ast
+    (declare (ignore kw_))
+    `((:lambda ()
+        (://if ,(funcall parse-fn cond)
+               ,(cons :progn (ensure-return (->list (funcall parse-fn then))))
+               ,(cons :progn (if else?
+                                 (ensure-return (->list (funcall parse-fn else)))
+                                 (list '(:return :nil)))))))))
+
+(defun rr/cond (ast parse-fn)
+  ;; (cond ...clause)
+  ;; clause ::= (test-form form*)
+  ;; add (t (:return :nil)) clause to the end to ensure IIFE gets a return value
+  (let ((clauses (mapcar (lambda (clause)
+                           `(,(funcall parse-fn (car clause))
+                             ,@(ensure-return (funcall parse-fn (cdr clause)))))
+                         (cdr ast))))
+    ;; extra parens in unless form are necessary.
+    ;; This way, a non-match (nil) is spliced away while a match
+    ;; means the last clause retains a set of parens
+    `((:lambda ()
+        (://cond ,@clauses
+                 ,@(unless (eq :t (caar (last clauses)))
+                     '((:t (:return :nil)))))))))
+
+;; should rewrite let and iter to wrap single-forms into a list
+(defun rr/for (ast parse-fn)
+  (destructuring-bind (kw_ opts &rest body) ast
+    (declare (ignore kw_))
+    (destructuring-bind (&key ((:let let-clause) :nil let?) (test :nil test?) (iter :nil iter?)) opts
+      (let ((let-clause (if (binding? let-clause)
+                            (list let-clause) let-clause)))
+        ;; TODO: how to check for iter-component ?
+        ;;    --- AND change (funcall parse-fn iter) -> (mapcar parse-fn iter-exprs)
+        (when let?
+          (loop for item in let-clause
+                do (unless (binding? item)
+                     (error (format nil "error in :let of for-form: '~a' is not a binding" item)))))
+        `((:lambda ()
+            (:for (:let ,(if let? (mapcadr parse-fn let-clause) :nil)
+                   :test ,(if test? (funcall parse-fn test) :nil)
+                   :iter ,(if iter? (funcall parse-fn iter) :nil))
+                  ,@(mapcar parse-fn body))
+            (:return :nil)))))))
 
 (defun rr/defun (ast parse-fn)
   "desugar function declaration into let assignment of a fat-arrow function"
@@ -66,7 +133,7 @@
   ;; out (let foo (lambda (...args) &body))
   (destructuring-bind (_ fname args &rest body) ast
     (declare (ignore _))
-    `(:let ,fname (:lambda ,args ,@(mapcar parse-fn body)))))
+    `(://defun ,fname (:lambda ,args ,@(mapcar parse-fn body)))))
 
 (defun rr/lambda (ast parse-fn)
   "rewrite lambda to return result of last stmt"
@@ -125,14 +192,16 @@
 (defun rr/prop-access (ast parse-fn)
   (unless (symbolp (cadr ast))
     (error "invalid - property access (@ ...) form *must* start with a symbol"))
-  (let ((xyz (reduce (lambda (acc e)
+  (let ((lst (reduce (lambda (acc e)
                        (if (keywordp e)
                            (cons e acc)
-                           (list `(://prop[] ,(cons ://prop (reverse acc))
+                           (list `(://prop[] ,(if (eq (length acc) 1)
+                                                  (car acc)
+                                                  (cons ://props (reverse acc)))
                                              ,(funcall parse-fn e))))) (cdr ast) :initial-value '())))
-    (if (eq (car xyz) ://prop[])
-        xyz
-        `(://prop ,@(reverse xyz)))))
+    (if (eq (length lst) 1)
+        (car lst)
+        `(://prop ,@(reverse lst)))))
 
 (defun rewrite-js-ast (ast)
   (rewrite-ast-multipass ast
